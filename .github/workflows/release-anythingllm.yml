@@ -1,0 +1,104 @@
+name: Release AnythingLLM
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+concurrency:
+  group: release-anythingllm
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.repository.default_branch }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Record starting commit
+        id: before_release
+        run: |
+          git fetch --force --tags origin
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - name: Release latest AnythingLLM version if needed
+        run: ./scripts/release-anythingllm.sh --push
+
+      - name: Detect release result
+        id: release_state
+        run: |
+          current_sha=$(git rev-parse HEAD)
+
+          if [ "$current_sha" = "${{ steps.before_release.outputs.sha }}" ]; then
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          version=$(perl -ne 'print "$1\n" if /^ARG ANYTHINGLLM_VERSION=(.+)$/ ' Dockerfile | head -n 1)
+
+          if [ -z "$version" ]; then
+            echo "error: could not determine ANYTHINGLLM_VERSION after release" >&2
+            exit 1
+          fi
+
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        if: steps.release_state.outputs.released == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: steps.release_state.outputs.released == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract Docker metadata
+        if: steps.release_state.outputs.released == 'true'
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=raw,value=main
+            type=raw,value=latest
+            type=raw,value=v${{ steps.release_state.outputs.version }}
+          labels: |
+            org.opencontainers.image.title=anythingllm-lagoon-base
+            org.opencontainers.image.description=Base AnythingLLM Lagoon runtime image
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build and push image
+        if: steps.release_state.outputs.released == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
