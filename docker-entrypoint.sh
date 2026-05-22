@@ -3,6 +3,12 @@
 export STORAGE_DIR="${STORAGE_DIR:-/app/server/storage}"
 export SERVER_PORT="${SERVER_PORT:-3000}"
 
+# Symlink .env to persistent storage so config survives container restarts
+if [ ! -f "$STORAGE_DIR/.env" ]; then
+  touch "$STORAGE_DIR/.env"
+fi
+ln -sf "$STORAGE_DIR/.env" /app/server/.env
+
 # Map Polydock/Lagoon variables to AnythingLLM/LiteLLM expected names
 export LITE_LLM_BASE_PATH="${LLM_URL:-$LITE_LLM_BASE_PATH}"
 export LITE_LLM_API_KEY="${LLM_AI_KEY:-$LITE_LLM_API_KEY}"
